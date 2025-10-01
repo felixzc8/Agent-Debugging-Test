@@ -14,5 +14,4 @@ def calculate_average(amounts: List[Union[Decimal, int, float]]) -> Decimal:
         return Decimal('0')
 
     total = calculate_total(amounts)
-    # BUG 5: Integer division loses precision - should use Decimal division
-    return total // len(amounts)
+    return total / Decimal(len(amounts))

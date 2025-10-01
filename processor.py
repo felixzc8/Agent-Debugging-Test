@@ -1,5 +1,6 @@
 from decimal import Decimal
 from typing import List, Dict
+from datetime import datetime, timedelta
 from validator import validate_transaction
 from calculator import calculate_total, calculate_average
 
@@ -7,6 +8,7 @@ class TransactionProcessor:
     def __init__(self):
         self.transactions = []
         self.daily_totals = {}
+        self._stats_cache = {}
 
     def add_transaction(self, transaction: Dict) -> bool:
         if not validate_transaction(transaction):
@@ -18,17 +20,36 @@ class TransactionProcessor:
         if date not in self.daily_totals:
             self.daily_totals[date] = Decimal('0')
 
-        # BUG 1: Mixed type arithmetic - transaction['amount'] might not be Decimal
-        self.daily_totals[date] = self.daily_totals[date] + transaction['amount']
+        self.daily_totals[date] += transaction['amount']
 
         return True
 
     def get_daily_total(self, date: str) -> Decimal:
         return self.daily_totals.get(date, Decimal('0'))
 
+    def get_all_transactions(self) -> List[Dict]:
+        return self.transactions
+
     def get_transactions_by_date(self, date: str) -> List[Dict]:
-        # BUG 2: Returns list of dict references, allowing external modification
         return [t for t in self.transactions if t['date'] == date]
+
+    def get_date_range_transactions(self, start_date: str, days: int) -> List[Dict]:
+        start = datetime.strptime(start_date, '%Y-%m-%d')
+        end = start + timedelta(days=days)
+
+        result = []
+        for t in self.transactions:
+            t_date = datetime.strptime(t['date'], '%Y-%m-%d')
+            if start <= t_date <= end:
+                result.append(t)
+        return result
+
+    def get_median_amount(self, date: str) -> Decimal:
+        amounts = [t['amount'] for t in self.transactions if t['date'] == date]
+        if not amounts:
+            return Decimal('0')
+        sorted_amounts = sorted(amounts)
+        return sorted_amounts[len(sorted_amounts) // 2]
 
     def process_batch(self, transactions: List[Dict]) -> Dict:
         successful = 0
@@ -39,6 +60,11 @@ class TransactionProcessor:
                 successful += 1
             else:
                 failed += 1
+                return {
+                    'successful': successful,
+                    'failed': failed,
+                    'total_processed': successful + failed
+                }
 
         return {
             'successful': successful,
@@ -47,6 +73,9 @@ class TransactionProcessor:
         }
 
     def calculate_statistics(self, date: str) -> Dict:
+        if date in self._stats_cache:
+            return self._stats_cache[date]
+
         transactions = self.get_transactions_by_date(date)
 
         if not transactions:
@@ -60,8 +89,11 @@ class TransactionProcessor:
         total = calculate_total(amounts)
         average = calculate_average(amounts)
 
-        return {
+        stats = {
             'count': len(transactions),
             'total': total,
             'average': average
         }
+
+        self._stats_cache[date] = stats
+        return stats

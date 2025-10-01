@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from decimal import Decimal
+from datetime import datetime, timedelta
 import sys
 from processor import TransactionProcessor
 
@@ -9,129 +10,127 @@ class TestResult:
         self.passed = passed
         self.message = message
 
-def test_decimal_precision():
-    """Test BUG 1: Decimal arithmetic precision"""
+def test_validation_mutation_side_effect():
+    """Test BUG 1: Validator mutates input even when validation fails"""
     processor = TransactionProcessor()
 
-    transactions = [
-        {'date': '2024-01-01', 'amount': 0.1, 'description': 'Test 1'},
-        {'date': '2024-01-01', 'amount': 0.2, 'description': 'Test 2'},
-    ]
+    invalid_transaction = {
+        'date': '2024-01-01',
+        'amount': -100,
+        'description': 'Negative amount'
+    }
 
-    for t in transactions:
-        processor.add_transaction(t)
+    original_type = type(invalid_transaction['amount'])
+    result = processor.add_transaction(invalid_transaction)
+    new_type = type(invalid_transaction['amount'])
 
-    total = processor.get_daily_total('2024-01-01')
-    expected = Decimal('0.3')
-
-    if total == expected and isinstance(total, Decimal):
-        return TestResult("Decimal precision", True)
+    if result == False and original_type is new_type:
+        return TestResult("Validation mutation side effect", True)
     else:
-        return TestResult("Decimal precision", False,
-                         f"Expected {expected}, got {total} (type: {type(total)})")
+        return TestResult("Validation mutation side effect", False,
+                         f"Validation failed correctly but mutated amount type from {original_type.__name__} to {new_type.__name__}")
 
-def test_data_encapsulation():
-    """Test BUG 2: Internal data structure protection"""
+def test_stale_statistics_cache():
+    """Test BUG 2: Statistics cache not invalidated when new transactions added"""
     processor = TransactionProcessor()
 
     processor.add_transaction({
         'date': '2024-01-01',
         'amount': Decimal('100'),
-        'description': 'Original'
+        'description': 'First'
     })
 
-    transactions = processor.get_transactions_by_date('2024-01-01')
-    original_description = processor.transactions[0]['description']
+    stats1 = processor.calculate_statistics('2024-01-01')
 
-    # Modify returned transaction dict
-    transactions[0]['description'] = 'HACKED'
+    processor.add_transaction({
+        'date': '2024-01-01',
+        'amount': Decimal('200'),
+        'description': 'Second'
+    })
 
-    # Check if internal state was affected
-    if processor.transactions[0]['description'] == original_description:
-        return TestResult("Data encapsulation", True)
+    stats2 = processor.calculate_statistics('2024-01-01')
+
+    if stats2['count'] == 2 and stats2['total'] == Decimal('300'):
+        return TestResult("Stale statistics cache", True)
     else:
-        return TestResult("Data encapsulation", False,
-                         "External code can modify internal transaction data")
+        return TestResult("Stale statistics cache", False,
+                         f"After adding 2nd transaction, expected count=2 total=300, got count={stats2['count']} total={stats2['total']}")
 
-def test_validation_logic():
-    """Test BUG 3: Validation logic error"""
+def test_median_even_length():
+    """Test BUG 3: Median calculation for even-length lists should average middle two"""
     processor = TransactionProcessor()
 
-    invalid_transaction = {
-        'date': '2024-01-01',
-        'amount': Decimal('100'),
-    }
+    amounts = [Decimal('10'), Decimal('20'), Decimal('30'), Decimal('40')]
+    for amt in amounts:
+        processor.add_transaction({
+            'date': '2024-01-01',
+            'amount': amt,
+            'description': 'Test'
+        })
 
-    try:
-        result = processor.add_transaction(invalid_transaction)
-        if result == False:
-            return TestResult("Validation logic", True)
-        else:
-            return TestResult("Validation logic", False,
-                             "Should reject transaction missing 'description' field")
-    except KeyError:
-        return TestResult("Validation logic", False,
-                         "Validation should check all fields exist before accessing them")
+    median = processor.get_median_amount('2024-01-01')
+    expected = Decimal('25')
 
-def test_amount_conversion():
-    """Test BUG 4: Amount should be converted to Decimal"""
+    if median == expected:
+        return TestResult("Median calculation (even-length)", True)
+    else:
+        return TestResult("Median calculation (even-length)", False,
+                         f"For [10,20,30,40], median should be 25 (avg of 20,30), got {median}")
+
+def test_date_range_boundary():
+    """Test BUG 4: Date range uses wrong boundary comparison"""
     processor = TransactionProcessor()
 
-    result = processor.add_transaction({
-        'date': '2024-01-01',
-        'amount': 100.50,
-        'description': 'Float amount'
-    })
+    for i in range(8):
+        date = (datetime(2024, 1, 1) + timedelta(days=i)).strftime('%Y-%m-%d')
+        processor.add_transaction({
+            'date': date,
+            'amount': Decimal('100'),
+            'description': f'Day {i}'
+        })
 
-    if not result:
-        return TestResult("Amount type handling", False,
-                         "Should accept numeric amounts")
+    transactions = processor.get_date_range_transactions('2024-01-01', days=7)
 
-    transaction = processor.get_transactions_by_date('2024-01-01')[0]
-    if not isinstance(transaction['amount'], Decimal):
-        return TestResult("Amount type handling", False,
-                         "Validator should convert amount to Decimal")
+    if len(transactions) == 7:
+        return TestResult("Date range boundary", True)
+    else:
+        return TestResult("Date range boundary", False,
+                         f"Expected 7 transactions for 7-day range, got {len(transactions)}")
 
-    return TestResult("Amount type handling", True)
-
-def test_average_precision():
-    """Test BUG 5: Division precision in average calculation"""
+def test_batch_atomicity():
+    """Test BUG 5: Batch processing is not atomic (partial state on failure)"""
     processor = TransactionProcessor()
 
     transactions = [
-        {'date': '2024-01-01', 'amount': Decimal('10.50'), 'description': 'T1'},
-        {'date': '2024-01-01', 'amount': Decimal('20.75'), 'description': 'T2'},
-        {'date': '2024-01-01', 'amount': Decimal('30.25'), 'description': 'T3'},
+        {'date': '2024-01-01', 'amount': Decimal('100'), 'description': 'Valid 1'},
+        {'date': '2024-01-02', 'amount': Decimal('200'), 'description': 'Valid 2'},
+        {'date': '2024-01-03', 'amount': -50, 'description': 'Invalid'},
+        {'date': '2024-01-04', 'amount': Decimal('300'), 'description': 'Valid 3'},
     ]
 
-    for t in transactions:
-        processor.add_transaction(t)
+    initial_count = len(processor.get_all_transactions())
+    result = processor.process_batch(transactions)
+    final_count = len(processor.get_all_transactions())
 
-    stats = processor.calculate_statistics('2024-01-01')
-
-    if not isinstance(stats['average'], Decimal):
-        return TestResult("Average calculation precision", False,
-                         f"Average should be Decimal, got {type(stats['average'])}")
-
-    expected = Decimal('20.50')
-    if stats['average'] == expected:
-        return TestResult("Average calculation precision", True)
+    if result['failed'] > 0 and final_count == initial_count:
+        return TestResult("Batch processing atomicity", True)
     else:
-        return TestResult("Average calculation precision", False,
-                         f"Expected {expected}, got {stats['average']}")
+        return TestResult("Batch processing atomicity", False,
+                         f"Batch with failure should rollback or not commit any. Started with {initial_count}, ended with {final_count}")
 
 def main():
     print("=" * 60)
-    print("DEBUGGING CHALLENGE - GRADING SYSTEM")
+    print("DEBUGGING CHALLENGE - GRADING SYSTEM (v3.0)")
+    print("AI-Hard Bugs Edition")
     print("=" * 60)
     print()
 
     tests = [
-        test_decimal_precision,
-        test_data_encapsulation,
-        test_validation_logic,
-        test_amount_conversion,
-        test_average_precision,
+        test_validation_mutation_side_effect,
+        test_stale_statistics_cache,
+        test_median_even_length,
+        test_date_range_boundary,
+        test_batch_atomicity,
     ]
 
     results = []
@@ -145,10 +144,9 @@ def main():
     print("Test Results:")
     print("-" * 60)
 
-    passed = 0
     for i, result in enumerate(results, 1):
         status = "✓ PASS" if result.passed else "✗ FAIL"
-        print(f"{i}. {result.name:40s} {status}")
+        print(f"{i}. {result.name:45s} {status}")
         if not result.passed and result.message:
             print(f"   → {result.message}")
 

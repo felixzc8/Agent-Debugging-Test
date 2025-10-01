@@ -88,7 +88,7 @@ def test_amount_conversion():
                          "Should accept numeric amounts")
 
     transaction = processor.get_transactions_by_date('2024-01-01')[0]
-    if isinstance(transaction['amount'], Decimal):
+    if not isinstance(transaction['amount'], Decimal):
         return TestResult("Amount type handling", False,
                          "Validator should convert amount to Decimal")
 
